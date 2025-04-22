@@ -13,14 +13,14 @@ IMAGE_DIR = 'flickr8k/Images'
 CAPTIONS_FILE = 'flickr8k/captions.txt'
 VIT_MODEL = 'google/vit-base-patch16-224-in21k'
 TEXT_MODEL = 'bert-base-uncased' 
-BATCH_SIZE = 16 
+BATCH_SIZE = 8 
 LEARNING_RATE = 5e-5
-EPOCHS = 10
+EPOCHS = 1
 MAX_LENGTH = 64 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TRAIN_RATIO = 0.9 
+TRAIN_RATIO = 0.01
 ACCELERATOR_LOGGING_DIR = "logs" 
-SAVE_CHECKPOINT_PATH = "UniGen.pt"
+SAVE_CHECKPOINT_PATH = "ckpt/UniGen.pt"
 
 def main():
     print(f"Using device: {DEVICE}")
@@ -42,8 +42,7 @@ def main():
     )
     
     model.text_decoder.resize_token_embeddings(len(tokenizer))
-    model.text_encoder.resize_token_embeddings(len(tokenizer)) 
-
+    model.text_encoder.resize_token_embeddings(len(tokenizer))
 
     train_dataset = Flickr8kDataset(IMAGE_DIR, CAPTIONS_FILE, tokenizer, max_length=MAX_LENGTH, split='train', train_ratio=TRAIN_RATIO)
     val_dataset = Flickr8kDataset(IMAGE_DIR, CAPTIONS_FILE, tokenizer, max_length=MAX_LENGTH, split='val', train_ratio=TRAIN_RATIO)
@@ -74,53 +73,104 @@ def main():
     global_step = 0
     for epoch in range(EPOCHS):
         model.train()
-        total_i2t_loss = 0
+        total_i2t_loss = 0 
+        total_t2i_loss = 0 
+        total_loss = 0 
         for step, batch in enumerate(train_dataloader):
-             if batch is None: continue 
-             optimizer.zero_grad()
-             pixel_values = batch['pixel_values']
-             input_ids = batch['input_ids']
-             attention_mask = batch['attention_mask']
+            if batch is None: continue 
+            optimizer.zero_grad()
+            pixel_values = batch['pixel_values']
+            input_ids = batch['input_ids']
+            attention_mask = batch['attention_mask']
 
-             labels = input_ids.clone()
-             labels[labels == tokenizer.pad_token_id] = -100 
-             i2t_loss, _ = model(pixel_values=pixel_values, input_ids=input_ids, attention_mask=attention_mask, labels=labels, mode='i2t')
-             loss = i2t_loss
-             accelerator.backward(loss)
-             optimizer.step()
-             lr_scheduler.step()
+            i2t_labels = input_ids.clone()
+            i2t_labels[i2t_labels == tokenizer.pad_token_id] = -100
 
-             total_i2t_loss += loss.item()
-             global_step += 1
+            t2i_input_ids = input_ids
+            t2i_attention_mask = attention_mask
+            t2i_labels = pixel_values 
+            
 
-             if accelerator.is_main_process and (step + 1) % 50 == 0:
-                 avg_loss = total_i2t_loss / (step + 1)
-                 accelerator.print(f"Epoch {epoch+1}/{EPOCHS}, Step {step+1}/{len(train_dataloader)}, I2T Loss: {loss.item():.4f}, Avg Loss: {avg_loss:.4f}, LR: {lr_scheduler.get_last_lr()[0]:.6f}")
-                 accelerator.log({"train_i2t_loss": loss.item(), "learning_rate": lr_scheduler.get_last_lr()[0]}, step=global_step)
+            i2t_loss, _ = model(pixel_values=pixel_values, input_ids=input_ids, attention_mask=attention_mask, 
+                                labels=i2t_labels, mode='i2t')
+            t2i_loss, _ = model(pixel_values=pixel_values, input_ids=t2i_input_ids, attention_mask=attention_mask, 
+                                labels=t2i_labels, mode='t2i')
+            loss = i2t_loss + t2i_loss
+            accelerator.backward(loss)
+            optimizer.step()
+            lr_scheduler.step()
+
+            total_i2t_loss += i2t_loss.item() 
+            total_t2i_loss += t2i_loss.item() 
+            total_loss = loss.item() 
+            global_step += 1
+
+            if accelerator.is_main_process and (step + 1) % 50 == 0:
+                 avg_i2t_loss = total_i2t_loss / (step + 1)
+                 avg_t2i_loss = total_t2i_loss / (step + 1) 
+                 avg_total_loss = total_loss / (step + 1) 
+
+                 accelerator.print(
+                     f"Epoch {epoch+1}/{EPOCHS}, Step {step+1}/{len(train_dataloader)}, "
+                     f"Total Loss: {loss.item():.4f}, Avg Total Loss: {avg_total_loss:.4f}, " 
+                     f"I2T Loss: {i2t_loss.item():.4f}, Avg I2T Loss: {avg_i2t_loss:.4f}, "      
+                     f"T2I Loss: {t2i_loss.item():.4f}, Avg T2I Loss: {avg_t2i_loss:.4f}, "  
+                     f"LR: {lr_scheduler.get_last_lr()[0]:.6f}"
+                 )
+                 accelerator.log({
+                     "train_total_loss": loss.item(),
+                     "train_i2t_loss": i2t_loss.item(),    
+                     "train_t2i_loss": t2i_loss.item(),    
+                     "learning_rate": lr_scheduler.get_last_lr()[0]
+                 }, step=global_step)
+
         ####VAL#####
         model.eval()
-        total_val_loss = 0
+        total_val_i2t_loss = 0 
+        total_val_t2i_loss = 0 
+        total_val_loss = 0 
         with torch.no_grad():
             for batch in val_dataloader:
                  if batch is None: continue
                  pixel_values = batch['pixel_values']
                  input_ids = batch['input_ids']
                  attention_mask = batch['attention_mask']
-                 labels = input_ids.clone()
-                 labels[labels == tokenizer.pad_token_id] = -100
 
+                 i2t_labels = input_ids.clone()
+                 i2t_labels[i2t_labels == tokenizer.pad_token_id] = -100
 
-                 i2t_loss, _ = model(pixel_values=pixel_values, input_ids=input_ids, attention_mask=attention_mask, 
-                                     labels=labels, mode='i2t')
-                 total_val_loss += i2t_loss.item()
+                 t2i_input_ids = input_ids
+                 t2i_attention_mask = attention_mask
+                 t2i_labels = pixel_values
 
+                 val_i2t_loss, _ = model(
+                     pixel_values=pixel_values,
+                     input_ids=input_ids,
+                     attention_mask=attention_mask,
+                     labels=i2t_labels,
+                     mode='i2t'
+                 )
+                 total_val_i2t_loss += val_i2t_loss.item()
 
-                 if accelerator.is_main_process and random.random() < 0.5:
+                 val_t2i_loss, _ = model(
+                     pixel_values=pixel_values,
+                     input_ids=t2i_input_ids,
+                     attention_mask=t2i_attention_mask,
+                     labels=t2i_labels,
+                     mode='t2i'
+                 )
+                 total_val_t2i_loss += val_t2i_loss.item()
+
+                 val_total_loss = val_i2t_loss + val_t2i_loss
+                 total_val_loss += val_total_loss.item()
+                 
+                 if accelerator.is_main_process and random.random() < 0.1:
                      try:
                           unwrapped_model = accelerator.unwrap_model(model)
                           generated_captions = unwrapped_model.generate_caption(pixel_values[:2], tokenizer, max_length=MAX_LENGTH)
                           accelerator.print("\n--- Example Generation ---")
                           for i in range(len(generated_captions)):
+                                unwrapped_model.generate_image(batch['image_ids'][i],input_ids[:2], attention_mask[:2])
                                 accelerator.print(f"Image ID: {batch['image_ids'][i]}")
                                 accelerator.print(f"  Original: {batch['captions'][i]}")
                                 accelerator.print(f"  Generated: {generated_captions[i]}")
@@ -128,11 +178,19 @@ def main():
                      except Exception as e:
                           accelerator.print(f"Generation failed: {e}")
 
+        avg_val_i2t_loss = total_val_i2t_loss / len(val_dataloader)
+        avg_val_t2i_loss = total_val_t2i_loss / len(val_dataloader) 
+        avg_val_total_loss = total_val_loss / len(val_dataloader) 
 
-        avg_val_loss = total_val_loss / len(val_dataloader)
-        accelerator.print(f"Epoch {epoch+1} Validation I2T Loss: {avg_val_loss:.4f}")
+        accelerator.print(f"Epoch {epoch+1} Validation Total Loss: {avg_val_total_loss:.4f}, "
+                          f"I2T Loss: {avg_val_i2t_loss:.4f}, T2I Loss: {avg_val_t2i_loss:.4f}") # 打印所有验证损失
+
         if accelerator.is_main_process:
-             accelerator.log({"val_i2t_loss": avg_val_loss}, step=global_step)
+             accelerator.log({
+                 "val_total_loss": avg_val_total_loss, 
+                 "val_i2t_loss": avg_val_i2t_loss,     
+                 "val_t2i_loss": avg_val_t2i_loss      
+             }, step=global_step)
 
              accelerator.wait_for_everyone()
              unwrapped_model = accelerator.unwrap_model(model)
@@ -141,12 +199,13 @@ def main():
                     "model_state_dict": unwrapped_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                    "loss": avg_val_loss,
+                    "train_total_loss": avg_total_loss, 
+                    "val_total_loss": avg_val_total_loss, 
                 }, SAVE_CHECKPOINT_PATH)
              accelerator.print(f"Checkpoint saved to {SAVE_CHECKPOINT_PATH}")
 
-    accelerator.end_training()
-    print("Training finished.")
+        accelerator.end_training()
+        print("Training finished.")
 
 
 if __name__ == "__main__":

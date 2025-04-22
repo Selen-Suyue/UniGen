@@ -22,7 +22,7 @@ class Flickr8kDataset(Dataset):
         if split == 'train':
             self.image_ids = self.all_image_ids[:num_train]
         elif split == 'val':
-             self.image_ids = self.all_image_ids[num_train:]
+             self.image_ids = self.all_image_ids[num_train:num_train+100]
         else:
             self.image_ids = self.all_image_ids
 
