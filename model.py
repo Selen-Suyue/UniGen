@@ -21,7 +21,7 @@ class MultimodalTransformer(nn.Module):
         config_text.add_cross_attention = True
         config_text.vocab_size = config_text.vocab_size 
 
-        self.v_feat_proj= nn.Linear(config_text.vocab_size+2, d_model) # 768
+        self.v_feat_proj= nn.Linear(config_text.vocab_size+2, d_model*4) 
         self.text_embeddings = nn.Embedding(config_text.vocab_size, d_model, padding_idx=config_text.pad_token_id)
         self.text_encoder = BertModel.from_pretrained(text_model_name, config=config_text)
         self.text_decoder = BertLMHeadModel.from_pretrained(text_model_name, config=config_text)
@@ -33,17 +33,6 @@ class MultimodalTransformer(nn.Module):
              self.vit_proj = nn.Identity()
         self.upconv=nn.Conv2d(3, 3, kernel_size=3, stride=1, padding=1)
 
-        # self.dit = DiT(
-        #     input_size=224,
-        #     patch_size=28,
-        #     in_channels=4,
-        #     hidden_size=d_model, 
-        #     depth=4,
-        #     num_heads=8,
-        #     mlp_ratio=4.0,
-        # )
-        # self.unconditional_embedding = nn.Parameter(torch.randn(1, d_model))
-        # nn.init.normal_(self.unconditional_embedding, std=0.02)
 
     def encode_image(self, pixel_values):
         vit_outputs = self.vit(pixel_values=pixel_values)
@@ -80,7 +69,7 @@ class MultimodalTransformer(nn.Module):
             encoder_hidden_states=text_feat,
           ).logits #batch_size, seq_len, vocab_size
         v_feat = self.v_feat_proj(outputs)
-        img = v_feat.reshape(v_feat.shape[0], 3, 128, 128) 
+        img = v_feat.reshape(v_feat.shape[0], 3, 256, 256) 
         img = F.interpolate(img, size=(224, 224), mode='bilinear', align_corners=False)
         img = self.upconv(img)
         loss = F.mse_loss(img, pixel_values)

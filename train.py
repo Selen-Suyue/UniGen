@@ -17,10 +17,10 @@ VIT_MODEL = 'google/vit-base-patch16-224-in21k'
 TEXT_MODEL = 'bert-base-uncased' 
 BATCH_SIZE = 128
 LEARNING_RATE = 5e-5
-EPOCHS = 10
+EPOCHS = 15
 MAX_LENGTH = 64 
 DEVICE = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
-TRAIN_RATIO = 0.05
+TRAIN_RATIO = 0.95
 ACCELERATOR_LOGGING_DIR = "logs" 
 SAVE_CHECKPOINT_PATH = "ckpt/UniGen.pt"
 
@@ -167,7 +167,7 @@ def main():
                  val_total_loss = val_i2t_loss + val_t2i_loss
                  total_val_loss += val_total_loss.item()
                  
-                 if accelerator.is_main_process and random.random() < 1:
+                 if accelerator.is_main_process and epoch % 4==0:
                      try:
                           unwrapped_model = accelerator.unwrap_model(model)
                           generated_captions = unwrapped_model.generate_caption(pixel_values[:2], tokenizer, max_length=MAX_LENGTH)
@@ -186,7 +186,7 @@ def main():
         avg_val_total_loss = total_val_loss / len(val_dataloader) 
 
         accelerator.print(f"Epoch {epoch+1} Validation Total Loss: {avg_val_total_loss:.4f}, "
-                          f"I2T Loss: {avg_val_i2t_loss:.4f}, T2I Loss: {avg_val_t2i_loss:.4f}") # 打印所有验证损失
+                          f"I2T Loss: {avg_val_i2t_loss:.4f}, T2I Loss: {avg_val_t2i_loss:.4f}") 
 
         if accelerator.is_main_process:
              accelerator.log({
