@@ -3,7 +3,6 @@ import torch.nn as nn
 import os
 from transformers import ViTModel,BertModel,  BertConfig,  BertLMHeadModel
 from dit import DiT
-from diffusers import DDPMScheduler
 from torch.nn import functional as F    
 from PIL import Image
 
@@ -126,7 +125,7 @@ class MultimodalTransformer(nn.Module):
             output_dir = 'gen_imgs'
             file_prefix = name
             for ig in range(generated_image.shape[0]):
-                img_tensor = generated_image[i].cpu()
+                img_tensor = generated_image[ig].cpu()
 
                 img_tensor = ((img_tensor.clamp(-1, 1) + 1) / 2) * 255
                 img_np = img_tensor.permute(1, 2, 0).byte().numpy() 

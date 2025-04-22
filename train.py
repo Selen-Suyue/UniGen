@@ -8,22 +8,23 @@ from accelerate import Accelerator
 from dataset import Flickr8kDataset, collate_fn
 from model import MultimodalTransformer
 from termcolor import cprint
+from tqdm import tqdm
+# accelerate launch --num_processes 1 --gpu_ids "6" --num_machines 1 --mixed_precision no --dynamo_backend no train.py
 
 IMAGE_DIR = 'flickr8k/Images'
 CAPTIONS_FILE = 'flickr8k/captions.txt'
 VIT_MODEL = 'google/vit-base-patch16-224-in21k'
 TEXT_MODEL = 'bert-base-uncased' 
-BATCH_SIZE = 8 
+BATCH_SIZE = 128
 LEARNING_RATE = 5e-5
-EPOCHS = 1
+EPOCHS = 10
 MAX_LENGTH = 64 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-TRAIN_RATIO = 0.01
+DEVICE = torch.device("cuda:6" if torch.cuda.is_available() else "cpu")
+TRAIN_RATIO = 0.05
 ACCELERATOR_LOGGING_DIR = "logs" 
 SAVE_CHECKPOINT_PATH = "ckpt/UniGen.pt"
 
 def main():
-    print(f"Using device: {DEVICE}")
 
     accelerator = Accelerator(log_with="tensorboard", project_dir=ACCELERATOR_LOGGING_DIR)
     accelerator.print(f"Accelerator device: {accelerator.device}")
@@ -76,7 +77,9 @@ def main():
         total_i2t_loss = 0 
         total_t2i_loss = 0 
         total_loss = 0 
-        for step, batch in enumerate(train_dataloader):
+        train_progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{EPOCHS} Training", 
+                                  disable=not accelerator.is_main_process, position=0, leave=True)
+        for step, batch in enumerate(train_progress_bar):
             if batch is None: continue 
             optimizer.zero_grad()
             pixel_values = batch['pixel_values']
@@ -164,7 +167,7 @@ def main():
                  val_total_loss = val_i2t_loss + val_t2i_loss
                  total_val_loss += val_total_loss.item()
                  
-                 if accelerator.is_main_process and random.random() < 0.1:
+                 if accelerator.is_main_process and random.random() < 1:
                      try:
                           unwrapped_model = accelerator.unwrap_model(model)
                           generated_captions = unwrapped_model.generate_caption(pixel_values[:2], tokenizer, max_length=MAX_LENGTH)
@@ -199,13 +202,12 @@ def main():
                     "model_state_dict": unwrapped_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                    "train_total_loss": avg_total_loss, 
                     "val_total_loss": avg_val_total_loss, 
                 }, SAVE_CHECKPOINT_PATH)
              accelerator.print(f"Checkpoint saved to {SAVE_CHECKPOINT_PATH}")
 
-        accelerator.end_training()
-        print("Training finished.")
+    accelerator.end_training()
+    print("Training finished.")
 
 
 if __name__ == "__main__":
