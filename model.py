@@ -108,7 +108,7 @@ class MultimodalTransformer(nn.Module):
                 encoder_hidden_states=text_feat,
             ).logits #batch_size, seq_len, vocab_size
             v_feat = self.v_feat_proj(outputs)
-            img = v_feat.reshape(v_feat.shape[0], 3, 128, 128) 
+            img = v_feat.reshape(v_feat.shape[0], 3, 256, 256) 
             img = F.interpolate(img, size=(224, 224), mode='bilinear', align_corners=False)
             generated_image = self.upconv(img)
             output_dir = 'gen_imgs'
