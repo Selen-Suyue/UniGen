@@ -2,13 +2,106 @@ import torch
 import torch.nn as nn
 import os
 from transformers import ViTModel,BertModel,  BertConfig,  BertLMHeadModel
-from dit import DiT
 from torch.nn import functional as F    
 from PIL import Image
-
+from diffusers import DDPMScheduler, UNet2DModel
 import logging
+
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SAVE_CHECKPOINT_PATH = "ckpt/UniGen.pt"
+
+class IntegratedImageGenerator(nn.Module):
+    def __init__(self, unigen_model_path="ckpt/UniGen.pt", image_size=224, unet_channels=3, unet_model_channels=128):
+        super().__init__()
+
+        self.unigen = MultimodalTransformer()
+        self.load_unigen_weights(unigen_model_path)
+        self.freeze_unigen()
+
+        self.unet = UNet2DModel(
+            sample_size=image_size,
+            in_channels=unet_channels*2,
+            out_channels=unet_channels,
+            layers_per_block=2,
+            block_out_channels=(unet_model_channels, unet_model_channels * 2, unet_model_channels * 4, unet_model_channels * 4),
+            down_block_types=(
+                "DownBlock2D",
+                "DownBlock2D",
+                "DownBlock2D",
+                "DownBlock2D",
+            ),
+            up_block_types=(
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+            ),
+        )
+
+        self.noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+
+        self.feature_projection = nn.Linear(768, unet_model_channels * 4)
+
+    def load_unigen_weights(self, unigen_model_path):
+        if os.path.exists(unigen_model_path):
+            self.unigen.text_decoder.resize_token_embeddings(30524)
+            self.unigen.text_encoder.resize_token_embeddings(30524)
+            checkpoint = torch.load(SAVE_CHECKPOINT_PATH, map_location=DEVICE)
+            if 'model_state_dict' in checkpoint:
+                self.unigen.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.unigen.load_state_dict(checkpoint)
+
+    def freeze_unigen(self):
+        for param in self.unigen.parameters():
+            param.requires_grad = False
+        print("UniGen weights frozen.")
+
+    def forward_unet(self, noisy_latents, timesteps, text_features):
+        projected_text_features = text_features
+        model_input = torch.cat([noisy_latents, projected_text_features], dim=1)
+        noise_pred = self.unet(model_input, timesteps).sample
+        return noise_pred
+
+    def forward(self, pixel_values=None, input_ids=None, attention_mask=None, mode='train_image_generation'):
+        if mode == 'train_image_generation':
+            if pixel_values is None or input_ids is None or attention_mask is None:
+                raise ValueError("Missing inputs for train_image_generation mode")
+
+            with torch.no_grad():
+                _, text_features = self.unigen.forward_t2i(input_ids=input_ids, attention_mask=attention_mask)
+
+            noise = torch.randn(pixel_values.shape, device=pixel_values.device)
+            bsz = pixel_values.shape[0]
+            timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (bsz,), device=pixel_values.device).long()
+            noisy_latents = self.noise_scheduler.add_noise(pixel_values, noise, timesteps)
+
+            noise_pred = self.forward_unet(noisy_latents, timesteps, text_features)
+            loss = F.mse_loss(noise_pred, noise)
+            return loss
+
+        elif mode == 'generate_image':
+            if input_ids is None or attention_mask is None:
+                 raise ValueError("Missing inputs for generate_image mode")
+
+            with torch.no_grad():
+                _, text_features = self.unigen.forward_t2i(input_ids=input_ids, attention_mask=attention_mask)
+
+            latent = torch.randn((input_ids.shape[0], self.unet.config.out_channels, self.unet.config.sample_size, self.unet.config.sample_size), device=self.feature_projection.weight.device)
+
+            for t in self.noise_scheduler.timesteps:
+                noise_pred = self.forward_unet(latent, t, text_features)
+                latent = self.noise_scheduler.step(noise_pred, t, latent).prev_sample
+
+            generated_image = ((latent.clamp(-1, 1) + 1) / 2)
+
+            return generated_image
+
+        else:
+             raise ValueError(f"Unknown mode: {mode}")
+        
 class MultimodalTransformer(nn.Module):
     def __init__(self, vit_model_name='google/vit-base-patch16-224-in21k', text_model_name='bert-base-uncased', d_model=768, 
                  nhead=12, num_decoder_layers=6):
@@ -60,7 +153,7 @@ class MultimodalTransformer(nn.Module):
         )
         return decoder_outputs.loss, decoder_outputs.logits
     
-    def forward_t2i(self, pixel_values, input_ids, attention_mask, labels):
+    def forward_t2i(self, pixel_values=None, input_ids=None, attention_mask=None, labels=None):
         text_feat= self.encode_text_for_dit(input_ids, attention_mask) #16,768
         text_feat = text_feat.unsqueeze(1) 
         outputs = self.text_decoder(
@@ -72,7 +165,10 @@ class MultimodalTransformer(nn.Module):
         img = v_feat.reshape(v_feat.shape[0], 3, 256, 256) 
         img = F.interpolate(img, size=(224, 224), mode='bilinear', align_corners=False)
         img = self.upconv(img)
-        loss = F.mse_loss(img, pixel_values)
+        if pixel_values is not None:
+            loss = F.mse_loss(img, pixel_values)
+        else:
+            loss = None
         return loss,img
         
 

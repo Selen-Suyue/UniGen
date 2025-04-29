@@ -4,3 +4,4 @@ ckpt
 gen_imgs
 logs
 logs/
+val_gen_imgs
