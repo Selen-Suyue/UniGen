@@ -12,7 +12,7 @@ import os
 from PIL import Image
 from tqdm import tqdm
 # accelerate launch --num_processes 1 --gpu_ids "6" --num_machines 1 --mixed_precision no --dynamo_backend no diffusion.py
-# accelerate launch --num_processes 4 --multi_gpu --gpu_ids "4,5,6,7" --mixed_precision no --dynamo_backend no diffusion.py
+# accelerate launch --num_processes 2 --multi_gpu --gpu_ids "6,7" --mixed_precision no --dynamo_backend no diffusion.py
 IMAGE_DIR = 'flickr8k/Images'
 CAPTIONS_FILE = 'flickr8k/captions.txt'
 VIT_MODEL = 'google/vit-base-patch16-224-in21k'
@@ -26,6 +26,8 @@ TRAIN_RATIO = 0.95
 ACCELERATOR_LOGGING_DIR = "logs"
 SAVE_CHECKPOINT_PATH = "ckpt/IntegratedImageGenerator.pt"
 UNIGEN_CHECKPOINT_PATH = "ckpt/UniGen.pt"
+RESUME_TRAINING = True  # 设置为 True 表示从 checkpoint 恢复训练
+RESUME_CHECKPOINT_PATH = "ckpt/IntegratedImageGenerator.pt"
 
 def main():
     print(f"Using device: {DEVICE}")
@@ -56,14 +58,24 @@ def main():
         num_warmup_steps=int(0.1 * num_training_steps),
         num_training_steps=num_training_steps
     )
+    
+    start_epoch = 0
 
+    if RESUME_TRAINING and os.path.exists(RESUME_CHECKPOINT_PATH):
+        accelerator.print(f"Resuming training from checkpoint: {RESUME_CHECKPOINT_PATH}")
+        checkpoint = torch.load(RESUME_CHECKPOINT_PATH, map_location='cpu')
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1  # 从上一次的下一个 epoch 开始
+    
     model, optimizer, train_dataloader, val_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader, lr_scheduler
     )
     accelerator.init_trackers("flickr8k_IntegratedGenerator")
 
     global_step = 0
-    for epoch in range(EPOCHS):
+    for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_t2i_gen_loss = 0
         train_progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{EPOCHS} Training", 
@@ -115,7 +127,7 @@ def main():
                  )
                  total_val_t2i_gen_loss += val_t2i_gen_loss.item()
 
-                 if accelerator.is_main_process and epoch % 3==0:
+                 if accelerator.is_main_process and epoch % 5==0 and random.random() < 0.3:
                      try:
                           unwrapped_model = accelerator.unwrap_model(model)
                           generated_images = unwrapped_model(input_ids=input_ids[:2], attention_mask=attention_mask[:2], mode='generate_image')

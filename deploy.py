@@ -9,14 +9,15 @@ try:
 except ImportError:
     torchvision_available = False
 
-from model import MultimodalTransformer
+from model import MultimodalTransformer,IntegratedImageGenerator
 
 VIT_MODEL = 'google/vit-base-patch16-224-in21k'
 TEXT_MODEL = 'bert-base-uncased'
 MAX_LENGTH = 64
-SAVE_CHECKPOINT_PATH = "ckpt/UniGen.pt"
+SAVE_CHECKPOINT_PATH = "ckpt/IntegratedImageGenerator.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEFAULT_OUTPUT_DIR = "generated_output"
+UNIGEN_CHECKPOINT_PATH = "ckpt/UniGen.pt"
 
 def load_image(image_path):
     try:
@@ -43,13 +44,14 @@ def main():
 
     feature_extractor = ViTFeatureExtractor.from_pretrained(VIT_MODEL)
 
-    model = MultimodalTransformer(
-        vit_model_name=VIT_MODEL,
-        text_model_name=TEXT_MODEL,
-        d_model=768,
-    )
-    model.text_decoder.resize_token_embeddings(len(tokenizer))
-    model.text_encoder.resize_token_embeddings(len(tokenizer))
+    # model = MultimodalTransformer(
+    #     vit_model_name=VIT_MODEL,
+    #     text_model_name=TEXT_MODEL,
+    #     d_model=768,
+    # )
+    model = IntegratedImageGenerator(unigen_model_path=UNIGEN_CHECKPOINT_PATH)
+    # model.text_decoder.resize_token_embeddings(len(tokenizer))
+    # model.text_encoder.resize_token_embeddings(len(tokenizer))
 
     try:
         checkpoint = torch.load(SAVE_CHECKPOINT_PATH, map_location=DEVICE)
@@ -94,7 +96,7 @@ def main():
                 if image:
                     pixel_values = preprocess_image(image, feature_extractor)
                     try:
-                        generated_caption = model.generate_caption(pixel_values, tokenizer, max_length=MAX_LENGTH)
+                        generated_caption = model.unigen.generate_caption(pixel_values, tokenizer, max_length=MAX_LENGTH)
                         print("\nGenerated Caption:")
                         for caption in generated_caption:
                             print(f"- {caption}")
@@ -111,7 +113,18 @@ def main():
 
                 input_ids, attention_mask = preprocess_text(user_input, tokenizer, MAX_LENGTH)
                 try:
-                    model.generate_image(img_counter,input_ids, attention_mask)
+                    generated_images=model(input_ids=input_ids, attention_mask=attention_mask,mode='generate_image')
+                    output_dir = 'val_gen_imgs'
+                    os.makedirs(output_dir, exist_ok=True)
+                    print("\n--- Example Generation ---")
+                    for i in range(generated_images.shape[0]):
+                        img_tensor = generated_images[i].cpu()
+                        img_tensor = img_tensor.permute(1, 2, 0) * 255
+                        img_np = img_tensor.byte().numpy()
+                        img_pil = Image.fromarray(img_np, 'RGB')
+                        filename = os.path.join(output_dir, f"GEN_{i}.png")
+                        img_pil.save(filename)
+                        print(f"Saved generated image {i+1} to {filename}")
 
                 except AttributeError:
                     print("Error: The loaded model does not support 'generate_image_from_text'.")
